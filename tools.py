@@ -403,7 +403,7 @@ def expose_via_localtunnel(port=8083, subdomain=None):
         raise
 
 
-def start_file_server_with_tunnel(directory="/", port=8083, host="0.0.0.0", subdomain=None):
+def start_file_server_with_tunnel(directory=".", port=8083, host="0.0.0.0", subdomain=None):
     """
     Start a file server and expose it via localtunnel.
     
