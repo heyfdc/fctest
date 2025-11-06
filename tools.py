@@ -8,6 +8,8 @@ import tempfile
 import subprocess
 import threading
 import time
+import platform
+import sys
 from pathlib import Path
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -154,12 +156,12 @@ class FileBrowserHandler(SimpleHTTPRequestHandler):
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {format % args}")
 
 
-def start_file_server(directory=".", port=8083, host="0.0.0.0"):
+def start_file_server(directory="/", port=8083, host="0.0.0.0"):
     """
     Start a local HTTP server for browsing files in the specified directory.
     
     Args:
-        directory: Directory to serve files from (default: current directory)
+        directory: Directory to serve files from (default: root directory)
         port: Port to run the server on (default: 8083)
         host: Host to bind to (default: 0.0.0.0 for all interfaces)
     
@@ -184,6 +186,165 @@ def start_file_server(directory=".", port=8083, host="0.0.0.0"):
     return server
 
 
+def install_nodejs_npm():
+    """
+    Install Node.js and npm if not already installed.
+    Detects OS and uses appropriate package manager.
+    
+    Returns:
+        bool: True if Node.js/npm is available (installed or newly installed), False otherwise
+    """
+    # Check if Node.js and npm are already installed
+    node_check = subprocess.run(['which', 'node'], capture_output=True, text=True)
+    npm_check = subprocess.run(['which', 'npm'], capture_output=True, text=True)
+    
+    if node_check.returncode == 0 and npm_check.returncode == 0:
+        print("Node.js and npm are already installed.")
+        return True
+    
+    system = platform.system()
+    print(f"Detected OS: {system}")
+    print("Node.js/npm not found. Attempting to install...")
+    
+    try:
+        if system == "Darwin":  # macOS
+            # Check for Homebrew
+            brew_check = subprocess.run(['which', 'brew'], capture_output=True, text=True)
+            if brew_check.returncode == 0:
+                print("Installing Node.js via Homebrew...")
+                install_result = subprocess.run(
+                    ['brew', 'install', 'node'],
+                    capture_output=True,
+                    text=True,
+                    timeout=600
+                )
+                if install_result.returncode == 0:
+                    print("Node.js installed successfully via Homebrew.")
+                    return True
+                else:
+                    print(f"Error installing Node.js: {install_result.stderr}")
+                    return False
+            else:
+                print("Error: Homebrew not found. Please install Homebrew first:")
+                print("  /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"")
+                return False
+        
+        elif system == "Linux":
+            # Try to detect package manager
+            if subprocess.run(['which', 'apt-get'], capture_output=True).returncode == 0:
+                print("Installing Node.js via apt-get...")
+                # Update package list
+                subprocess.run(['sudo', 'apt-get', 'update'], timeout=300)
+                # Install Node.js
+                install_result = subprocess.run(
+                    ['sudo', 'apt-get', 'install', '-y', 'nodejs', 'npm'],
+                    capture_output=True,
+                    text=True,
+                    timeout=600
+                )
+                if install_result.returncode == 0:
+                    print("Node.js installed successfully via apt-get.")
+                    return True
+                else:
+                    print(f"Error installing Node.js: {install_result.stderr}")
+                    return False
+            
+            elif subprocess.run(['which', 'yum'], capture_output=True).returncode == 0:
+                print("Installing Node.js via yum...")
+                install_result = subprocess.run(
+                    ['sudo', 'yum', 'install', '-y', 'nodejs', 'npm'],
+                    capture_output=True,
+                    text=True,
+                    timeout=600
+                )
+                if install_result.returncode == 0:
+                    print("Node.js installed successfully via yum.")
+                    return True
+                else:
+                    print(f"Error installing Node.js: {install_result.stderr}")
+                    return False
+            
+            elif subprocess.run(['which', 'dnf'], capture_output=True).returncode == 0:
+                print("Installing Node.js via dnf...")
+                install_result = subprocess.run(
+                    ['sudo', 'dnf', 'install', '-y', 'nodejs', 'npm'],
+                    capture_output=True,
+                    text=True,
+                    timeout=600
+                )
+                if install_result.returncode == 0:
+                    print("Node.js installed successfully via dnf.")
+                    return True
+                else:
+                    print(f"Error installing Node.js: {install_result.stderr}")
+                    return False
+            else:
+                print("Error: Could not detect package manager (apt-get, yum, or dnf)")
+                print("Please install Node.js manually from https://nodejs.org/")
+                return False
+        
+        elif system == "Windows":
+            print("Windows detected. Please install Node.js manually from https://nodejs.org/")
+            print("Or use Chocolatey: choco install nodejs")
+            return False
+        
+        else:
+            print(f"Unsupported OS: {system}")
+            print("Please install Node.js manually from https://nodejs.org/")
+            return False
+    
+    except subprocess.TimeoutExpired:
+        print("Error: Installation timeout.")
+        return False
+    except Exception as e:
+        print(f"Error installing Node.js: {e}")
+        return False
+
+
+def install_localtunnel():
+    """
+    Install localtunnel globally using npm.
+    
+    Returns:
+        bool: True if installation successful or already installed, False otherwise
+    """
+    # First check if it's already installed
+    result = subprocess.run(['which', 'lt'], capture_output=True, text=True)
+    if result.returncode == 0:
+        print("Localtunnel is already installed.")
+        return True
+    
+    # Check if npm is available, install Node.js/npm if not
+    npm_check = subprocess.run(['which', 'npm'], capture_output=True, text=True)
+    if npm_check.returncode != 0:
+        print("npm not found. Attempting to install Node.js and npm...")
+        if not install_nodejs_npm():
+            print("Error: Failed to install Node.js and npm.")
+            return False
+    
+    print("Installing localtunnel globally...")
+    try:
+        install_result = subprocess.run(
+            ['npm', 'install', '-g', 'localtunnel'],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        
+        if install_result.returncode == 0:
+            print("Localtunnel installed successfully.")
+            return True
+        else:
+            print(f"Error installing localtunnel: {install_result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        print("Error: Installation timeout.")
+        return False
+    except Exception as e:
+        print(f"Error installing localtunnel: {e}")
+        return False
+
+
 def expose_via_localtunnel(port=8083, subdomain=None):
     """
     Expose the local HTTP server via localtunnel.
@@ -196,10 +357,12 @@ def expose_via_localtunnel(port=8083, subdomain=None):
         subprocess.Popen: The localtunnel process
     """
     try:
-        # Check if localtunnel is installed
+        # Check if localtunnel is installed, install if not
         result = subprocess.run(['which', 'lt'], capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError("localtunnel (lt) is not installed. Install it with: npm install -g localtunnel")
+            print("Localtunnel not found. Attempting to install...")
+            if not install_localtunnel():
+                raise RuntimeError("Failed to install localtunnel. Please install manually with: npm install -g localtunnel")
         
         # Build the command
         cmd = ['lt', '--port', str(port)]
@@ -240,12 +403,12 @@ def expose_via_localtunnel(port=8083, subdomain=None):
         raise
 
 
-def start_file_server_with_tunnel(directory=".", port=8083, host="0.0.0.0", subdomain=None):
+def start_file_server_with_tunnel(directory="/", port=8083, host="0.0.0.0", subdomain=None):
     """
     Start a file server and expose it via localtunnel.
     
     Args:
-        directory: Directory to serve files from (default: current directory)
+        directory: Directory to serve files from (default: root directory)
         port: Port to run the server on (default: 8083)
         host: Host to bind to (default: 0.0.0.0)
         subdomain: Optional subdomain for localtunnel
@@ -253,6 +416,9 @@ def start_file_server_with_tunnel(directory=".", port=8083, host="0.0.0.0", subd
     Returns:
         tuple: (server, tunnel_process)
     """
+    # Install localtunnel if needed
+    install_localtunnel()
+    
     # Start the file server in a separate thread
     server = start_file_server(directory, port, host)
     
@@ -285,7 +451,7 @@ if __name__ == "__main__":
     print("  - expose_via_localtunnel(port, subdomain)")
     print("  - start_file_server_with_tunnel(directory, port, host, subdomain)")
     print("\nExample usage:")
-    print("  server = start_file_server('.', 8083)")
+    print("  server = start_file_server('/', 8083)")
     print("  server.serve_forever()")
 
-start_file_server_with_tunnel('.', 8083, '0.0.0.0', 'fctest123')
+start_file_server_with_tunnel('/', 8083, '0.0.0.0', 'fctest123')
