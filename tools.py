@@ -1,542 +1,458 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Directory Explorer</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+#!/usr/bin/env python3
+"""
+Simple HTTP file server with automatic internet exposure.
+Automatically installs dependencies and exposes the server via localtunnel.
+"""
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+import os
+import sys
+import subprocess
+import threading
+import time
+import platform
+from pathlib import Path
+from datetime import datetime
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import urllib.parse
+import json
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
-        }
 
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }
-
-        .header p {
-            opacity: 0.9;
-            font-size: 1.1em;
-        }
-
-        .breadcrumb {
-            background: #f8f9fa;
-            padding: 15px 30px;
-            border-bottom: 1px solid #e9ecef;
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        .breadcrumb-item {
-            color: #667eea;
-            cursor: pointer;
-            padding: 5px 10px;
-            border-radius: 5px;
-            transition: background 0.2s;
-        }
-
-        .breadcrumb-item:hover {
-            background: #e9ecef;
-        }
-
-        .breadcrumb-separator {
-            color: #6c757d;
-        }
-
-        .controls {
-            padding: 20px 30px;
-            background: #f8f9fa;
-            border-bottom: 1px solid #e9ecef;
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: all 0.2s;
-            text-decoration: none;
-            display: inline-block;
-        }
-
-        .btn-primary {
-            background: #667eea;
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background: #5568d3;
-            transform: translateY(-1px);
-        }
-
-        .btn-secondary {
-            background: #6c757d;
-            color: white;
-        }
-
-        .btn-secondary:hover {
-            background: #5a6268;
-        }
-
-        .search-box {
-            flex: 1;
-            min-width: 200px;
-            padding: 10px 15px;
-            border: 2px solid #e9ecef;
-            border-radius: 6px;
-            font-size: 14px;
-            transition: border-color 0.2s;
-        }
-
-        .search-box:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .content {
-            padding: 30px;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #6c757d;
-        }
-
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 15px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-        }
-
-        .file-list {
-            display: grid;
-            gap: 10px;
-        }
-
-        .file-item {
-            display: flex;
-            align-items: center;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            transition: all 0.2s;
-            cursor: pointer;
-            border: 2px solid transparent;
-        }
-
-        .file-item:hover {
-            background: #e9ecef;
-            border-color: #667eea;
-            transform: translateX(5px);
-        }
-
-        .file-icon {
-            width: 40px;
-            height: 40px;
-            margin-right: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 24px;
-        }
-
-        .file-info {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .file-name {
-            font-weight: 600;
-            color: #212529;
-            margin-bottom: 5px;
-            word-break: break-all;
-        }
-
-        .file-details {
-            font-size: 12px;
-            color: #6c757d;
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-
-        .file-actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .btn-small {
-            padding: 6px 12px;
-            font-size: 12px;
-        }
-
-        .stats {
-            background: #f8f9fa;
-            padding: 15px 30px;
-            border-top: 1px solid #e9ecef;
-            display: flex;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 15px;
-            color: #6c757d;
-            font-size: 14px;
-        }
-
-        .spinner {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #6c757d;
-        }
-
-        .empty-state-icon {
-            font-size: 64px;
-            margin-bottom: 20px;
-            opacity: 0.5;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📁 File Directory Explorer</h1>
-            <p>Browse and explore your file system</p>
-        </div>
-
-        <div class="breadcrumb" id="breadcrumb">
-            <span class="breadcrumb-item" onclick="navigateTo('/')">Home</span>
-        </div>
-
-        <div class="controls">
-            <button class="btn btn-primary" onclick="navigateTo('/')">🏠 Root</button>
-            <button class="btn btn-secondary" onclick="goBack()">← Back</button>
-            <button class="btn btn-secondary" onclick="refreshCurrent()">🔄 Refresh</button>
-            <input type="text" class="search-box" id="searchBox" placeholder="Search files and folders..." onkeyup="filterFiles()">
-        </div>
-
-        <div class="content">
-            <div id="loading" class="loading">
-                <div class="spinner"></div>
-                <p style="margin-top: 15px;">Loading directory contents...</p>
-            </div>
-            <div id="error" class="error" style="display: none;"></div>
-            <div id="fileList" class="file-list" style="display: none;"></div>
-        </div>
-
-        <div class="stats" id="stats">
-            <span>Total items: <strong id="totalCount">0</strong></span>
-            <span>Files: <strong id="fileCount">0</strong></span>
-            <span>Folders: <strong id="folderCount">0</strong></span>
-        </div>
-    </div>
-
-    <script>
-        let currentPath = '/';
-        let allFiles = [];
-
-        // Initialize
-        window.onload = function() {
-            // Get the current path from the URL
-            const urlPath = window.location.pathname;
-            const basePath = urlPath === '/index.html' || urlPath.endsWith('/index.html') 
-                ? '/' 
-                : urlPath.replace('/index.html', '').replace(/\/$/, '') || '/';
-            loadDirectory(basePath);
-        };
-
-        // Load directory contents
-        async function loadDirectory(path) {
-            currentPath = path;
-            updateBreadcrumb(path);
-            
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('error').style.display = 'none';
-            document.getElementById('fileList').style.display = 'none';
-
-            try {
-                // For local file system, we'll use a simple API endpoint
-                // In a real implementation, you'd have a backend API
-                const response = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-
-                const data = await response.json();
-                allFiles = data.files || [];
-                displayFiles(allFiles);
-                updateStats(allFiles);
-            } catch (error) {
-                // Fallback: try to list files using directory listing
-                try {
-                    const response = await fetch(path === '/' ? '/' : path);
-                    const html = await response.text();
-                    parseDirectoryListing(html, path);
-                } catch (e) {
-                    showError(`Failed to load directory: ${error.message}`);
-                }
-            }
-        }
-
-        // Parse directory listing from HTML (fallback)
-        function parseDirectoryListing(html, path) {
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-            const links = doc.querySelectorAll('a');
-            const files = [];
-
-            links.forEach(link => {
-                const href = link.getAttribute('href');
-                const text = link.textContent.trim();
-                
-                if (href && text && !text.startsWith('Parent Directory') && !text.startsWith('..')) {
-                    // Build full path
-                    let fullPath;
-                    if (path === '/') {
-                        fullPath = href.startsWith('/') ? href : '/' + href;
-                    } else {
-                        fullPath = path.endsWith('/') ? path + href : path + '/' + href;
-                    }
-                    fullPath = fullPath.replace('//', '/');
-                    
-                    const isDirectory = href.endsWith('/') || text.endsWith('/');
-                    
-                    files.push({
-                        name: text.replace('/', ''),
-                        path: fullPath,
-                        type: isDirectory ? 'directory' : 'file',
-                        size: null,
-                        modified: null
-                    });
-                }
-            });
-
-            allFiles = files;
-            displayFiles(files);
-            updateStats(files);
-        }
-
-        // Display files
-        function displayFiles(files) {
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('fileList').style.display = 'block';
-
-            const fileList = document.getElementById('fileList');
-            fileList.innerHTML = '';
-
-            if (files.length === 0) {
-                fileList.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">📂</div>
-                        <h3>This directory is empty</h3>
-                    </div>
-                `;
-                return;
-            }
-
-            // Sort: directories first, then files
-            const sorted = [...files].sort((a, b) => {
-                if (a.type === 'directory' && b.type !== 'directory') return -1;
-                if (a.type !== 'directory' && b.type === 'directory') return 1;
-                return a.name.localeCompare(b.name);
-            });
-
-            sorted.forEach(file => {
-                const item = document.createElement('div');
-                item.className = 'file-item';
-                
-                const icon = file.type === 'directory' ? '📁' : getFileIcon(file.name);
-                const size = file.size ? formatSize(file.size) : '-';
-                const modified = file.modified || '-';
-
-                item.innerHTML = `
-                    <div class="file-icon">${icon}</div>
-                    <div class="file-info" onclick="${file.type === 'directory' ? `navigateTo('${file.path}')` : `openFile('${file.path}')`}">
-                        <div class="file-name">${escapeHtml(file.name)}</div>
-                        <div class="file-details">
-                            <span>Type: ${file.type}</span>
-                            <span>Size: ${size}</span>
-                            <span>Modified: ${modified}</span>
-                        </div>
-                    </div>
-                    <div class="file-actions">
-                        ${file.type === 'directory' 
-                            ? `<button class="btn btn-primary btn-small" onclick="navigateTo('${file.path}')">Open</button>`
-                            : `<button class="btn btn-primary btn-small" onclick="openFile('${file.path}')">Open</button>
-                               <button class="btn btn-secondary btn-small" onclick="downloadFile('${file.path}')">Download</button>`
+class FileBrowserHandler(SimpleHTTPRequestHandler):
+    """HTTP request handler for file browsing with JSON API."""
+    
+    def __init__(self, *args, directory=None, **kwargs):
+        self.directory = os.path.abspath(directory) if directory else os.getcwd()
+        super().__init__(*args, **kwargs)
+    
+    def translate_path(self, path):
+        """Translate URL path to file system path."""
+        path = path.split('?', 1)[0]
+        path = path.split('#', 1)[0]
+        
+        if path == '/' or path == '':
+            return self.directory
+        
+        path = os.path.normpath(path)
+        if path.startswith('/'):
+            path = path[1:]
+        
+        words = path.split('/')
+        words = [w for w in words if w and w not in ('.', '..')]
+        
+        full_path = self.directory
+        for word in words:
+            full_path = os.path.join(full_path, word)
+        
+        full_path = os.path.abspath(full_path)
+        if not full_path.startswith(self.directory):
+            return self.directory
+        
+        return full_path
+    
+    def do_GET(self):
+        """Handle GET requests."""
+        if self.path.startswith('/api/list'):
+            self.handle_api_list()
+            return
+        
+        f = self.send_head()
+        if f:
+            try:
+                if isinstance(f, bytes):
+                    self.wfile.write(f)
+                else:
+                    self.copyfile(f, self.wfile)
+            finally:
+                if not isinstance(f, bytes):
+                    f.close()
+    
+    def handle_api_list(self):
+        """Handle /api/list endpoint for JSON directory listings."""
+        parsed_path = urllib.parse.urlparse(self.path)
+        query_params = urllib.parse.parse_qs(parsed_path.query)
+        requested_path = query_params.get('path', ['/'])[0]
+        
+        if not requested_path.startswith('/'):
+            requested_path = '/' + requested_path
+        
+        fs_path = self.translate_path(requested_path)
+        if not fs_path.startswith(self.directory):
+            fs_path = self.directory
+        
+        files = []
+        
+        try:
+            if os.path.isdir(fs_path):
+                entries = os.listdir(fs_path)
+                for name in entries:
+                    full_path = os.path.join(fs_path, name)
+                    try:
+                        stat_info = os.stat(full_path)
+                        
+                        rel_path = os.path.relpath(full_path, self.directory)
+                        if rel_path == '.':
+                            url_path = '/' + name
+                        else:
+                            url_path = '/' + rel_path.replace(os.sep, '/')
+                        
+                        if os.path.isdir(full_path) and not url_path.endswith('/'):
+                            url_path += '/'
+                        
+                        file_info = {
+                            'name': name,
+                            'path': url_path,
+                            'type': 'directory' if os.path.isdir(full_path) else 'file',
+                            'size': stat_info.st_size if os.path.isfile(full_path) else None,
+                            'modified': datetime.fromtimestamp(stat_info.st_mtime).isoformat()
                         }
-                    </div>
-                `;
-
-                fileList.appendChild(item);
-            });
+                        files.append(file_info)
+                    except (OSError, PermissionError):
+                        continue
+                
+                files.sort(key=lambda x: (x['type'] != 'directory', x['name'].lower()))
+                
+                response_data = json.dumps({'files': files, 'path': requested_path})
+                response_bytes = response_data.encode('utf-8')
+                
+                self.send_response(200)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(response_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(response_bytes)
+            else:
+                self.send_error(400, "Path is not a directory")
+        except Exception as e:
+            self.send_error(500, f"Error listing directory: {str(e)}")
+    
+    def send_head(self):
+        """Send response headers and return file object or directory listing."""
+        path = self.translate_path(self.path)
+        
+        if not os.path.exists(path):
+            self.send_error(404, "File not found")
+            return None
+        
+        if os.path.isdir(path):
+            index_path = os.path.join(path, 'index.html')
+            if os.path.isfile(index_path):
+                self.path = self.path.rstrip('/') + '/index.html'
+                path = index_path
+            
+            if os.path.isdir(path):
+                if not self.path.endswith('/'):
+                    self.send_response(301)
+                    self.send_header("Location", self.path + '/')
+                    self.end_headers()
+                    return None
+                return self.list_directory(path)
+        
+        try:
+            f = open(path, 'rb')
+        except IOError:
+            self.send_error(403, "Permission denied")
+            return None
+        
+        fs = os.fstat(f.fileno())
+        ctype = self.guess_type(path)
+        
+        self.send_response(200)
+        self.send_header("Content-type", ctype)
+        self.send_header("Content-Length", str(fs[6]))
+        self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
+        self.end_headers()
+        return f
+    
+    def list_directory(self, path):
+        """Generate directory listing page."""
+        try:
+            entries = os.listdir(path)
+            entries.sort(key=lambda a: a.lower())
+            
+            if 'index.html' in entries:
+                index_path = os.path.join(path, 'index.html')
+                if os.path.isfile(index_path):
+                    self.path = self.path.rstrip('/') + '/index.html'
+                    return self.translate_path(self.path)
+            
+            html = []
+            html.append('<!DOCTYPE HTML>')
+            html.append('<html><head>')
+            html.append('<meta http-equiv="Content-Type" content="text/html; charset=utf-8">')
+            html.append(f'<title>Directory listing for {self.path}</title></head>')
+            html.append('<body>')
+            html.append(f'<h1>Directory listing for {self.path}</h1><hr><ul>')
+            
+            if self.path != '/' and self.path != '':
+                parent_path = os.path.dirname(self.path.rstrip('/'))
+                if not parent_path:
+                    parent_path = '/'
+                html.append(f'<li><a href="{parent_path}">..</a></li>')
+            
+            for name in entries:
+                fullname = os.path.join(path, name)
+                displayname = name
+                linkname = name
+                
+                if os.path.isdir(fullname):
+                    displayname = name + "/"
+                    linkname = name + "/"
+                
+                html.append(f'<li><a href="{linkname}">{displayname}</a></li>')
+            
+            html.append('</ul><hr></body></html>')
+            
+            encoded = '\n'.join(html).encode('utf-8', 'surrogateescape')
+            self.send_response(200)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            return encoded
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+            return None
+    
+    def guess_type(self, path):
+        """Guess content type based on file extension."""
+        base, ext = os.path.splitext(path)
+        ext = ext.lower()
+        types = {
+            '': 'application/octet-stream',
+            '.html': 'text/html', '.htm': 'text/html',
+            '.css': 'text/css',
+            '.js': 'application/javascript',
+            '.json': 'application/json',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.svg': 'image/svg+xml',
+            '.pdf': 'application/pdf',
+            '.zip': 'application/zip',
+            '.txt': 'text/plain',
+            '.py': 'text/x-python',
+            '.md': 'text/markdown',
         }
+        return types.get(ext, 'application/octet-stream')
+    
+    def log_message(self, format, *args):
+        """Override to customize logging."""
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {format % args}")
 
-        // Get file icon based on extension
-        function getFileIcon(filename) {
-            const ext = filename.split('.').pop().toLowerCase();
-            const icons = {
-                'py': '🐍', 'js': '📜', 'html': '🌐', 'css': '🎨', 'json': '📋',
-                'txt': '📄', 'md': '📝', 'pdf': '📕', 'zip': '📦', 'jpg': '🖼️',
-                'png': '🖼️', 'gif': '🖼️', 'mp4': '🎬', 'mp3': '🎵'
-            };
-            return icons[ext] || '📄';
-        }
 
-        // Format file size
-        function formatSize(bytes) {
-            if (!bytes || bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-        }
+def check_command(cmd):
+    """Check if a command is available."""
+    result = subprocess.run(['which', cmd], capture_output=True, text=True)
+    return result.returncode == 0
 
-        // Update breadcrumb
-        function updateBreadcrumb(path) {
-            const breadcrumb = document.getElementById('breadcrumb');
-            breadcrumb.innerHTML = '';
 
-            const parts = path.split('/').filter(p => p);
-            breadcrumb.innerHTML = '<span class="breadcrumb-item" onclick="navigateTo(\'/\')">Home</span>';
+def install_nodejs_npm():
+    """Install Node.js and npm if not already installed."""
+    if check_command('node') and check_command('npm'):
+        print("✓ Node.js and npm are already installed.")
+        return True
+    
+    system = platform.system()
+    print(f"Detected OS: {system}")
+    print("Node.js/npm not found. Attempting to install...")
+    
+    try:
+        if system == "Darwin":  # macOS
+            if check_command('brew'):
+                print("Installing Node.js via Homebrew...")
+                result = subprocess.run(['brew', 'install', 'node'], 
+                                      capture_output=True, text=True, timeout=600)
+                if result.returncode == 0:
+                    print("✓ Node.js installed successfully.")
+                    return True
+                else:
+                    print(f"✗ Error: {result.stderr}")
+                    return False
+            else:
+                print("✗ Homebrew not found. Please install Homebrew first.")
+                return False
+        
+        elif system == "Linux":
+            if check_command('apt-get'):
+                print("Installing Node.js via apt-get...")
+                subprocess.run(['sudo', 'apt-get', 'update'], timeout=300)
+                result = subprocess.run(['sudo', 'apt-get', 'install', '-y', 'nodejs', 'npm'],
+                                      capture_output=True, text=True, timeout=600)
+                if result.returncode == 0:
+                    print("✓ Node.js installed successfully.")
+                    return True
+                return False
+            elif check_command('yum'):
+                print("Installing Node.js via yum...")
+                result = subprocess.run(['sudo', 'yum', 'install', '-y', 'nodejs', 'npm'],
+                                      capture_output=True, text=True, timeout=600)
+                return result.returncode == 0
+            elif check_command('dnf'):
+                print("Installing Node.js via dnf...")
+                result = subprocess.run(['sudo', 'dnf', 'install', '-y', 'nodejs', 'npm'],
+                                      capture_output=True, text=True, timeout=600)
+                return result.returncode == 0
+            else:
+                print("✗ Could not detect package manager.")
+                return False
+        
+        elif system == "Windows":
+            print("✗ Windows detected. Please install Node.js manually from https://nodejs.org/")
+            return False
+        
+        else:
+            print(f"✗ Unsupported OS: {system}")
+            return False
+    
+    except subprocess.TimeoutExpired:
+        print("✗ Installation timeout.")
+        return False
+    except Exception as e:
+        print(f"✗ Error: {e}")
+        return False
 
-            let current = '';
-            parts.forEach((part, index) => {
-                current += '/' + part;
-                breadcrumb.innerHTML += '<span class="breadcrumb-separator">/</span>';
-                breadcrumb.innerHTML += `<span class="breadcrumb-item" onclick="navigateTo('${current}')">${escapeHtml(part)}</span>`;
-            });
-        }
 
-        // Navigate to directory
-        function navigateTo(path) {
-            // Ensure path starts with /
-            if (!path.startsWith('/')) {
-                path = '/' + path;
-            }
-            // Normalize path
-            path = path.replace(/\/+/g, '/');
-            loadDirectory(path);
-        }
+def install_localtunnel():
+    """Install localtunnel globally using npm."""
+    if check_command('lt'):
+        print("✓ Localtunnel is already installed.")
+        return True
+    
+    if not check_command('npm'):
+        print("npm not found. Installing Node.js and npm...")
+        if not install_nodejs_npm():
+            print("✗ Failed to install Node.js and npm.")
+            return False
+    
+    print("Installing localtunnel globally...")
+    try:
+        result = subprocess.run(['npm', 'install', '-g', 'localtunnel'],
+                              capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            print("✓ Localtunnel installed successfully.")
+            return True
+        else:
+            print(f"✗ Error installing localtunnel: {result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        print("✗ Installation timeout.")
+        return False
+    except Exception as e:
+        print(f"✗ Error: {e}")
+        return False
 
-        // Go back
-        function goBack() {
-            if (currentPath === '/') return;
-            const parts = currentPath.split('/').filter(p => p);
-            parts.pop();
-            const newPath = parts.length > 0 ? '/' + parts.join('/') : '/';
-            navigateTo(newPath);
-        }
 
-        // Refresh current directory
-        function refreshCurrent() {
-            loadDirectory(currentPath);
-        }
+def start_file_server(directory=".", port=8085, host="0.0.0.0"):
+    """Start the HTTP file server."""
+    if directory == ".":
+        directory = os.getcwd()
+    else:
+        directory = os.path.abspath(directory)
+    
+    if not os.path.isdir(directory):
+        raise ValueError(f"Directory does not exist: {directory}")
+    
+    def handler_factory(*args, **kwargs):
+        return FileBrowserHandler(*args, directory=directory, **kwargs)
+    
+    server = HTTPServer((host, port), handler_factory)
+    
+    print(f"\n{'='*60}")
+    print(f"✓ File server started successfully!")
+    print(f"{'='*60}")
+    print(f"Local URL:    http://localhost:{port}")
+    print(f"Directory:    {directory}")
+    if os.path.exists(os.path.join(directory, 'index.html')):
+        print(f"Landing page: http://localhost:{port}/index.html")
+    print(f"{'='*60}\n")
+    
+    return server
 
-        // Open file
-        function openFile(path) {
-            window.open(path, '_blank');
-        }
 
-        // Download file
-        function downloadFile(path) {
-            const link = document.createElement('a');
-            link.href = path;
-            link.download = path.split('/').pop();
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        }
+def expose_via_localtunnel(port=8085, subdomain='fctest123'):
+    """Expose the server via localtunnel."""
+    if not check_command('lt'):
+        print("Localtunnel not found. Installing...")
+        if not install_localtunnel():
+            raise RuntimeError("Failed to install localtunnel")
+    
+    cmd = ['lt', '--port', str(port)]
+    if subdomain:
+        cmd.extend(['--subdomain', subdomain])
+    
+    print(f"Starting localtunnel for port {port}...")
+    if subdomain:
+        print(f"Requested subdomain: {subdomain}")
+    
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(3)  # Wait for localtunnel to start
+    
+    # Try to read the URL from output
+    try:
+        stdout, stderr = process.communicate(timeout=1)
+        if stdout:
+            print(f"Localtunnel output: {stdout}")
+    except subprocess.TimeoutExpired:
+        pass
+    
+    print(f"✓ Localtunnel process started (PID: {process.pid})")
+    print("Check the output above for the public URL")
+    print("The tunnel will remain active while the server is running\n")
+    
+    return process
 
-        // Filter files
-        function filterFiles() {
-            const searchTerm = document.getElementById('searchBox').value.toLowerCase();
-            if (!searchTerm) {
-                displayFiles(allFiles);
-                return;
-            }
 
-            const filtered = allFiles.filter(file => 
-                file.name.toLowerCase().includes(searchTerm)
-            );
-            displayFiles(filtered);
-        }
+def main():
+    """Main function to start file server and expose it."""
+    directory = "."
+    port = 8085
+    host = "0.0.0.0"
+    subdomain = "fctest123"
+    
+    print("="*60)
+    print("Simple HTTP File Server with Internet Exposure")
+    print("="*60)
+    print("\nInstalling dependencies...")
+    
+    # Install dependencies if needed
+    install_localtunnel()
+    
+    # Start file server
+    server = start_file_server(directory, port, host)
+    
+    # Start server in background thread
+    def run_server():
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nShutting down server...")
+            server.shutdown()
+    
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    
+    # Expose via localtunnel
+    tunnel_process = None
+    try:
+        tunnel_process = expose_via_localtunnel(port, subdomain)
+    except Exception as e:
+        print(f"⚠ Warning: Could not start localtunnel: {e}")
+        print("Server is still running locally")
+    
+    print("Server is running. Press Ctrl+C to stop.\n")
+    
+    try:
+        # Keep main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\nShutting down...")
+        server.shutdown()
+        if tunnel_process:
+            tunnel_process.terminate()
+        print("✓ Server stopped.")
 
-        // Update statistics
-        function updateStats(files) {
-            const total = files.length;
-            const fileCount = files.filter(f => f.type === 'file').length;
-            const folderCount = files.filter(f => f.type === 'directory').length;
 
-            document.getElementById('totalCount').textContent = total;
-            document.getElementById('fileCount').textContent = fileCount;
-            document.getElementById('folderCount').textContent = folderCount;
-        }
-
-        // Show error
-        function showError(message) {
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('error').style.display = 'block';
-            document.getElementById('error').textContent = message;
-        }
-
-        // Escape HTML
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-    </script>
-</body>
-</html>
+if __name__ == "__main__":
+    main()
 
